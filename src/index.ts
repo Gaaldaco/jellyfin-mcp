@@ -1,6 +1,8 @@
 import express from "express";
+import { randomUUID } from "crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   JellyfinClient,
@@ -24,7 +26,11 @@ if (!JELLYFIN_URL || !JELLYFIN_API_KEY) {
   process.exit(1);
 }
 
-const jellyfin = new JellyfinClient(JELLYFIN_URL, JELLYFIN_API_KEY, JELLYFIN_USER_ID);
+const jellyfin = new JellyfinClient(
+  JELLYFIN_URL,
+  JELLYFIN_API_KEY,
+  JELLYFIN_USER_ID
+);
 
 // ── MCP server factory ───────────────────────────────────────────────────────
 
@@ -77,11 +83,17 @@ function buildMcpServer(): McpServer {
     {
       query: z.string().describe("Search term"),
       type: z
-        .enum(["Movie", "Series", "Episode", "MusicAlbum", "MusicArtist", "Audio", ""])
+        .enum([
+          "Movie",
+          "Series",
+          "Episode",
+          "MusicAlbum",
+          "MusicArtist",
+          "Audio",
+          "",
+        ])
         .optional()
-        .describe(
-          "Filter by item type. Leave empty to search all types."
-        ),
+        .describe("Filter by item type. Leave empty to search all types."),
       limit: z
         .number()
         .int()
@@ -128,14 +140,18 @@ function buildMcpServer(): McpServer {
         );
       }
       if (item.DateCreated) {
-        details.push(`Added: ${new Date(item.DateCreated).toLocaleDateString()}`);
+        details.push(
+          `Added: ${new Date(item.DateCreated).toLocaleDateString()}`
+        );
       }
       if (item.UserData) {
         const ud = item.UserData;
         if (ud.PlayCount) details.push(`Play count: ${ud.PlayCount}`);
         if (ud.Played) details.push("Status: Watched");
         if (ud.PlaybackPositionTicks && !ud.Played) {
-          details.push(`Progress: ${formatRuntime(ud.PlaybackPositionTicks)} watched`);
+          details.push(
+            `Progress: ${formatRuntime(ud.PlaybackPositionTicks)} watched`
+          );
         }
       }
 
@@ -151,7 +167,9 @@ function buildMcpServer(): McpServer {
       library_id: z
         .string()
         .optional()
-        .describe("Library ID to filter by (from get_libraries). Omit for all libraries."),
+        .describe(
+          "Library ID to filter by (from get_libraries). Omit for all libraries."
+        ),
       limit: z
         .number()
         .int()
@@ -202,7 +220,10 @@ function buildMcpServer(): McpServer {
           item.UserData?.PlaybackPositionTicks,
           item.RunTimeTicks
         );
-        return formatItem(item, i) + (progress ? `\n   Progress: ${progress}` : "");
+        return (
+          formatItem(item, i) +
+          (progress ? `\n   Progress: ${progress}` : "")
+        );
       });
       return {
         content: [
@@ -253,7 +274,9 @@ function buildMcpServer(): McpServer {
       season_id: z
         .string()
         .optional()
-        .describe("Season ID to filter by (from get_seasons). Omit to get all episodes."),
+        .describe(
+          "Season ID to filter by (from get_seasons). Omit to get all episodes."
+        ),
     },
     async ({ series_id, season_id }) => {
       const result = await jellyfin.getEpisodes(series_id, season_id);
@@ -263,7 +286,9 @@ function buildMcpServer(): McpServer {
       const lines = result.Items.map((ep) => {
         const s = ep.ParentIndexNumber ?? "?";
         const e = ep.IndexNumber ?? "?";
-        const runtime = ep.RunTimeTicks ? ` | ${formatRuntime(ep.RunTimeTicks)}` : "";
+        const runtime = ep.RunTimeTicks
+          ? ` | ${formatRuntime(ep.RunTimeTicks)}`
+          : "";
         const watched = ep.UserData?.Played ? " ✓" : "";
         let line = `S${s}E${e} — ${ep.Name}${watched}${runtime} — ID: ${ep.Id}`;
         if (ep.Overview) line += `\n   ${ep.Overview.slice(0, 150)}`;
@@ -303,9 +328,12 @@ function buildMcpServer(): McpServer {
           );
           lines.push(
             `\n• ${s.UserName ?? "Unknown"} on ${s.DeviceName ?? "Unknown"} (${s.Client ?? "?"})` +
-              `\n  ${state}: ${np.Name}${progress}` +
+              `\n  ${state}: ${np.Name}` +
+              (progress ? ` — ${progress}` : "") +
               `\n  Session ID: ${s.Id}` +
-              (s.SupportsRemoteControl ? "\n  (supports remote control)" : "")
+              (s.SupportsRemoteControl
+                ? "\n  (supports remote control)"
+                : "")
           );
         }
       }
@@ -313,7 +341,9 @@ function buildMcpServer(): McpServer {
       if (idle.length) {
         lines.push(`\nIdle sessions (${idle.length}):`);
         for (const s of idle) {
-          lines.push(`• ${s.UserName ?? "Unknown"} — ${s.DeviceName ?? "Unknown"} (${s.Client ?? "?"})`);
+          lines.push(
+            `• ${s.UserName ?? "Unknown"} — ${s.DeviceName ?? "Unknown"} (${s.Client ?? "?"})`
+          );
         }
       }
 
@@ -328,11 +358,21 @@ function buildMcpServer(): McpServer {
   // ── control_playback ──────────────────────────────────────────────────────
   server.tool(
     "control_playback",
-    "Send a playback command to a session (pause, resume, stop, skip). Use get_sessions first to get the session ID.",
+    "Send a playback command to a session. Use get_sessions first to get the session ID.",
     {
       session_id: z.string().describe("Session ID from get_sessions"),
       command: z
-        .enum(["Stop", "Pause", "Unpause", "PlayPause", "NextTrack", "PreviousTrack", "Seek", "Rewind", "FastForward"])
+        .enum([
+          "Stop",
+          "Pause",
+          "Unpause",
+          "PlayPause",
+          "NextTrack",
+          "PreviousTrack",
+          "Seek",
+          "Rewind",
+          "FastForward",
+        ])
         .describe("Playback command to send"),
       seek_seconds: z
         .number()
@@ -344,7 +384,11 @@ function buildMcpServer(): McpServer {
         command === "Seek" && seek_seconds !== undefined
           ? seek_seconds * 10_000_000
           : undefined;
-      await jellyfin.sendPlayStateCommand(session_id, command as PlayStateCommand, seekTicks);
+      await jellyfin.sendPlayStateCommand(
+        session_id,
+        command as PlayStateCommand,
+        seekTicks
+      );
       return {
         content: [
           {
@@ -370,7 +414,11 @@ function buildMcpServer(): McpServer {
         .describe("Start position in seconds (default 0)"),
     },
     async ({ session_id, item_id, start_seconds }) => {
-      await jellyfin.playItem(session_id, [item_id], (start_seconds ?? 0) * 10_000_000);
+      await jellyfin.playItem(
+        session_id,
+        [item_id],
+        (start_seconds ?? 0) * 10_000_000
+      );
       return {
         content: [
           {
@@ -385,16 +433,42 @@ function buildMcpServer(): McpServer {
   return server;
 }
 
-// ── Express + SSE transport ──────────────────────────────────────────────────
+// ── Express + Streamable HTTP transport (MCP spec 2025-06-18) ────────────────
 
 const app = express();
-const sessions = new Map<string, SSEServerTransport>();
+app.use(express.json());
 
-app.get("/", (_req, res) => {
+// CORS — required for Claude.ai browser-based connections
+app.use((_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, DELETE, OPTIONS, HEAD"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Mcp-Session-Id, Authorization"
+  );
+  next();
+});
+app.options("*", (_req, res) => res.sendStatus(204));
+
+// Session store: sessionId -> transport
+const transports = new Map<string, StreamableHTTPServerTransport>();
+
+// Protocol discovery — HEAD / returns protocol version
+app.head("/", (_req, res) => {
+  res.setHeader("MCP-Protocol-Version", "2025-06-18");
+  res.sendStatus(200);
+});
+
+// Health check (moved off root so HEAD / can be used for MCP discovery)
+app.get("/health", (_req, res) => {
   res.json({
     name: "jellyfin-mcp",
     version: "1.0.0",
     status: "ok",
+    jellyfin: JELLYFIN_URL,
     tools: [
       "get_server_info",
       "get_libraries",
@@ -411,27 +485,63 @@ app.get("/", (_req, res) => {
   });
 });
 
-app.get("/sse", async (_req, res) => {
-  const transport = new SSEServerTransport("/messages", res);
-  sessions.set(transport.sessionId, transport);
-  res.on("close", () => sessions.delete(transport.sessionId));
+// MCP: POST / — incoming JSON-RPC messages
+app.post("/", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
-  const server = buildMcpServer();
-  await server.connect(transport);
-});
+  let transport: StreamableHTTPServerTransport;
 
-app.post("/messages", express.json(), async (req, res) => {
-  const sessionId = req.query.sessionId as string;
-  const transport = sessions.get(sessionId);
-  if (!transport) {
-    res.status(404).json({ error: "Session not found. Connect via /sse first." });
+  if (sessionId && transports.has(sessionId)) {
+    // Existing session
+    transport = transports.get(sessionId)!;
+  } else if (!sessionId && isInitializeRequest(req.body)) {
+    // New session — create transport + MCP server
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        transports.set(id, transport);
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) transports.delete(transport.sessionId);
+    };
+    const server = buildMcpServer();
+    await server.connect(transport);
+  } else {
+    res
+      .status(400)
+      .json({ error: "Missing or invalid Mcp-Session-Id header." });
     return;
   }
-  await transport.handlePostMessage(req, res);
+
+  await transport.handleRequest(req, res, req.body);
+});
+
+// MCP: GET / — server-to-client SSE stream (for server-initiated messages)
+app.get("/", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (!sessionId || !transports.has(sessionId)) {
+    res.status(400).json({ error: "Invalid or missing Mcp-Session-Id." });
+    return;
+  }
+  await transports.get(sessionId)!.handleRequest(req, res);
+});
+
+// MCP: DELETE / — session termination
+app.delete("/", async (req, res) => {
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (!sessionId || !transports.has(sessionId)) {
+    res.status(400).json({ error: "Invalid or missing Mcp-Session-Id." });
+    return;
+  }
+  const transport = transports.get(sessionId)!;
+  await transport.handleRequest(req, res);
+  transports.delete(sessionId);
 });
 
 app.listen(PORT, () => {
   console.log(`Jellyfin MCP server listening on port ${PORT}`);
   console.log(`Jellyfin: ${JELLYFIN_URL}`);
-  console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
+  console.log(`MCP endpoint: http://localhost:${PORT}/`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
 });
