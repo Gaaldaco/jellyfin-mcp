@@ -4,6 +4,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import {
   JellyfinClient,
+  PlayStateCommand,
   formatItem,
   formatRuntime,
   formatProgress,
@@ -331,7 +332,7 @@ function buildMcpServer(): McpServer {
     {
       session_id: z.string().describe("Session ID from get_sessions"),
       command: z
-        .enum(["Pause", "Unpause", "Stop", "NextTrack", "PreviousTrack", "Seek"])
+        .enum(["Stop", "Pause", "Unpause", "PlayPause", "NextTrack", "PreviousTrack", "Seek", "Rewind", "FastForward"])
         .describe("Playback command to send"),
       seek_seconds: z
         .number()
@@ -343,7 +344,7 @@ function buildMcpServer(): McpServer {
         command === "Seek" && seek_seconds !== undefined
           ? seek_seconds * 10_000_000
           : undefined;
-      await jellyfin.sendPlayStateCommand(session_id, command, seekTicks);
+      await jellyfin.sendPlayStateCommand(session_id, command as PlayStateCommand, seekTicks);
       return {
         content: [
           {

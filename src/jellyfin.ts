@@ -10,8 +10,8 @@ export interface JellyfinItem {
   ProductionYear?: number;
   SeriesName?: string;
   SeasonName?: string;
-  IndexNumber?: number;       // Episode/season number
-  ParentIndexNumber?: number; // Season number for episodes
+  IndexNumber?: number;       // episode/season number
+  ParentIndexNumber?: number; // season number (for episodes)
   DateCreated?: string;
   UserData?: {
     PlaybackPositionTicks?: number;
@@ -29,19 +29,26 @@ export interface JellyfinItemsResponse {
 
 export interface JellyfinSession {
   Id: string;
+  UserId?: string;
   UserName?: string;
   DeviceName?: string;
+  DeviceId?: string;
   Client?: string;
+  IsActive?: boolean;
+  SupportsRemoteControl?: boolean;
+  SupportsMediaControl?: boolean;
   PlayState?: {
     PositionTicks?: number;
     CanSeek?: boolean;
     IsPaused?: boolean;
     IsMuted?: boolean;
     VolumeLevel?: number;
+    AudioStreamIndex?: number;
+    SubtitleStreamIndex?: number;
+    PlayMethod?: string;
   };
   NowPlayingItem?: JellyfinItem;
   LastActivityDate?: string;
-  SupportsRemoteControl?: boolean;
 }
 
 export interface JellyfinServerInfo {
@@ -49,8 +56,21 @@ export interface JellyfinServerInfo {
   Version?: string;
   OperatingSystem?: string;
   Id?: string;
-  StartupWizardCompleted?: boolean;
+  ProductName?: string;
+  HasUpdateAvailable?: boolean;
 }
+
+// PlayState commands accepted by POST /Sessions/{sessionId}/Playing/{command}
+export type PlayStateCommand =
+  | "Stop"
+  | "Pause"
+  | "Unpause"
+  | "PlayPause"
+  | "NextTrack"
+  | "PreviousTrack"
+  | "Seek"
+  | "Rewind"
+  | "FastForward";
 
 type Params = Record<string, string | number | boolean | undefined>;
 
@@ -85,11 +105,15 @@ export class JellyfinClient {
     return res.json() as Promise<T>;
   }
 
-  private async post(path: string, body?: unknown): Promise<void> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
+  // POST with all params in the query string (no body) — used for session control
+  private async postQuery(path: string, params: Params = {}): Promise<void> {
+    const url = new URL(`${this.baseUrl}${path}`);
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    }
+    const res = await fetch(url.toString(), {
       method: "POST",
       headers: this.authHeaders,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -122,12 +146,15 @@ export class JellyfinClient {
 
   // ── Items ────────────────────────────────────────────────────────────────
 
+  // GET /Items — search with optional type filter
   async searchItems(
     searchTerm: string,
     includeItemTypes?: string,
     limit = 20
   ): Promise<JellyfinItemsResponse> {
+    const userId = await this.getUserId();
     return this.get("/Items", {
+      userId,
       searchTerm,
       includeItemTypes,
       limit,
@@ -137,29 +164,35 @@ export class JellyfinClient {
     });
   }
 
+  // GET /Items?ids={itemId}&userId={userId} — fetch single item details
   async getItem(itemId: string): Promise<JellyfinItem> {
     const userId = await this.getUserId();
-    return this.get(`/Users/${userId}/Items/${itemId}`, {
+    const result = await this.get<JellyfinItemsResponse>("/Items", {
+      ids: itemId,
+      userId,
       fields:
         "Overview,Genres,DateCreated,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,People,ProductionYear,UserData",
     });
+    if (!result.Items.length) throw new Error(`Item ${itemId} not found`);
+    return result.Items[0];
   }
 
-  async getLatestItems(
-    parentId?: string,
-    limit = 20
-  ): Promise<JellyfinItem[]> {
+  // GET /Items/Latest — recently added (userId as query param)
+  async getLatestItems(parentId?: string, limit = 20): Promise<JellyfinItem[]> {
     const userId = await this.getUserId();
-    return this.get(`/Users/${userId}/Items/Latest`, {
+    return this.get("/Items/Latest", {
+      userId,
       parentId,
       limit,
       fields: "Overview,DateCreated,CommunityRating,ProductionYear",
     });
   }
 
+  // GET /UserItems/Resume — continue watching (userId as query param)
   async getResumeItems(limit = 10): Promise<JellyfinItemsResponse> {
     const userId = await this.getUserId();
-    return this.get(`/Users/${userId}/Items/Resume`, {
+    return this.get("/UserItems/Resume", {
+      userId,
       limit,
       mediaTypes: "Video",
       fields: "Overview,RunTimeTicks,UserData",
@@ -182,8 +215,8 @@ export class JellyfinClient {
   ): Promise<JellyfinItemsResponse> {
     const userId = await this.getUserId();
     return this.get(`/Shows/${seriesId}/Episodes`, {
-      seasonId,
       userId,
+      seasonId,
       fields: "Overview,DateCreated,RunTimeTicks,UserData",
     });
   }
@@ -196,31 +229,30 @@ export class JellyfinClient {
 
   // ── Remote control ───────────────────────────────────────────────────────
 
+  // POST /Sessions/{sessionId}/Playing/{command}?seekPositionTicks=...
+  // command goes in the PATH, seekPositionTicks goes in the QUERY STRING
   async sendPlayStateCommand(
     sessionId: string,
-    command: "Pause" | "Unpause" | "Stop" | "NextTrack" | "PreviousTrack" | "Seek",
+    command: PlayStateCommand,
     seekPositionTicks?: number
   ): Promise<void> {
-    const body: Record<string, unknown> = { Command: command };
+    const params: Params = {};
     if (command === "Seek" && seekPositionTicks !== undefined) {
-      body.SeekPositionTicks = seekPositionTicks;
+      params.seekPositionTicks = seekPositionTicks;
     }
-    return this.post(`/Sessions/${sessionId}/Playing/Unpause`, body).catch(
-      () =>
-        // Fallback: some clients use the GeneralCommand path
-        this.post(`/Sessions/${sessionId}/Command`, { Name: command })
-    );
+    return this.postQuery(`/Sessions/${sessionId}/Playing/${command}`, params);
   }
 
+  // POST /Sessions/{sessionId}/Playing — ALL params are query string, NO body
   async playItem(
     sessionId: string,
     itemIds: string[],
     startPositionTicks = 0
   ): Promise<void> {
-    return this.post(`/Sessions/${sessionId}/Playing`, {
-      PlayCommand: "PlayNow",
-      ItemIds: itemIds,
-      StartPositionTicks: startPositionTicks,
+    return this.postQuery(`/Sessions/${sessionId}/Playing`, {
+      playCommand: "PlayNow",
+      itemIds: itemIds.join(","),
+      startPositionTicks,
     });
   }
 }
@@ -242,7 +274,7 @@ export function formatProgress(
   if (!positionTicks) return "";
   const pos = formatRuntime(positionTicks);
   const total = totalTicks ? ` / ${formatRuntime(totalTicks)}` : "";
-  return ` (${pos}${total})`;
+  return `${pos}${total}`;
 }
 
 export function formatItem(item: JellyfinItem, index?: number): string {
@@ -259,9 +291,10 @@ export function formatItem(item: JellyfinItem, index?: number): string {
   if (details.length) line += `\n   ${details.join(" | ")}`;
 
   if (item.Overview) {
-    const summary = item.Overview.length > 200
-      ? item.Overview.slice(0, 197) + "..."
-      : item.Overview;
+    const summary =
+      item.Overview.length > 200
+        ? item.Overview.slice(0, 197) + "..."
+        : item.Overview;
     line += `\n   ${summary}`;
   }
 
