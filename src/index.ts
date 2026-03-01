@@ -7,6 +7,7 @@ import { z } from "zod";
 import {
   JellyfinClient,
   PlayStateCommand,
+  JellyfinUser,
   formatItem,
   formatRuntime,
   formatProgress,
@@ -39,6 +40,70 @@ function buildMcpServer(): McpServer {
     name: "jellyfin-mcp",
     version: "1.0.0",
   });
+
+  // ── get_users ─────────────────────────────────────────────────────────────
+  server.tool(
+    "get_users",
+    "List all Jellyfin users with their ID, admin status, and last activity (requires admin API key)",
+    {},
+    async () => {
+      const users = await jellyfin.getUsers();
+      if (!users.length) {
+        return { content: [{ type: "text", text: "No users found." }] };
+      }
+      const formatUser = (u: JellyfinUser) => {
+        const flags: string[] = [];
+        if (u.Policy?.IsAdministrator) flags.push("Admin");
+        if (u.Policy?.IsDisabled) flags.push("Disabled");
+        if (!u.Policy?.EnableRemoteAccess) flags.push("Local only");
+        const lastSeen = u.LastActivityDate
+          ? new Date(u.LastActivityDate).toLocaleString()
+          : "Never";
+        const lastLogin = u.LastLoginDate
+          ? new Date(u.LastLoginDate).toLocaleString()
+          : "Never";
+        return [
+          `• ${u.Name} — ID: ${u.Id}`,
+          `  Status: ${flags.length ? flags.join(", ") : "Standard"}`,
+          `  Last login: ${lastLogin} | Last activity: ${lastSeen}`,
+        ].join("\n");
+      };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Users (${users.length}):\n\n${users.map(formatUser).join("\n\n")}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // ── create_user ───────────────────────────────────────────────────────────
+  server.tool(
+    "create_user",
+    "Create a new Jellyfin user with a username and password (requires admin API key)",
+    {
+      username: z.string().min(1).describe("Username for the new account"),
+      password: z.string().min(1).describe("Password for the new account"),
+    },
+    async ({ username, password }) => {
+      const user = await jellyfin.createUser(username, password);
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `User created successfully.`,
+              `Name: ${user.Name}`,
+              `ID: ${user.Id}`,
+              `Admin: ${user.Policy?.IsAdministrator ? "Yes" : "No"}`,
+            ].join("\n"),
+          },
+        ],
+      };
+    }
+  );
 
   // ── get_server_info ───────────────────────────────────────────────────────
   server.tool(
@@ -470,6 +535,8 @@ app.get("/health", (_req, res) => {
     status: "ok",
     jellyfin: JELLYFIN_URL,
     tools: [
+      "get_users",
+      "create_user",
       "get_server_info",
       "get_libraries",
       "search_media",

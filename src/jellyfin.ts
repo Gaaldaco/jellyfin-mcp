@@ -51,6 +51,21 @@ export interface JellyfinSession {
   LastActivityDate?: string;
 }
 
+export interface JellyfinUser {
+  Id: string;
+  Name: string;
+  HasPassword?: boolean;
+  HasConfiguredPassword?: boolean;
+  LastLoginDate?: string;
+  LastActivityDate?: string;
+  Policy?: {
+    IsAdministrator?: boolean;
+    IsDisabled?: boolean;
+    EnableRemoteAccess?: boolean;
+    MaxStreamingBitrate?: number;
+  };
+}
+
 export interface JellyfinServerInfo {
   ServerName?: string;
   Version?: string;
@@ -105,6 +120,20 @@ export class JellyfinClient {
     return res.json() as Promise<T>;
   }
 
+  // POST with a JSON body — used for creating resources
+  private async postJson<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "POST",
+      headers: this.authHeaders,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Jellyfin ${res.status} ${res.statusText}: ${text}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
   // POST with all params in the query string (no body) — used for session control
   private async postQuery(path: string, params: Params = {}): Promise<void> {
     const url = new URL(`${this.baseUrl}${path}`);
@@ -130,6 +159,16 @@ export class JellyfinClient {
     const admin = users.find((u) => u.Policy?.IsAdministrator);
     this._userId = (admin ?? users[0]).Id;
     return this._userId;
+  }
+
+  // ── Users ────────────────────────────────────────────────────────────────
+
+  async getUsers(): Promise<JellyfinUser[]> {
+    return this.get("/Users");
+  }
+
+  async createUser(name: string, password: string): Promise<JellyfinUser> {
+    return this.postJson("/Users/New", { Name: name, Password: password });
   }
 
   // ── Server ───────────────────────────────────────────────────────────────
