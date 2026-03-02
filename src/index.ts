@@ -512,8 +512,9 @@ app.use((_req, res, next) => {
   );
   res.setHeader(
     "Access-Control-Allow-Headers",
-    "Content-Type, Mcp-Session-Id, Authorization"
+    "Content-Type, Accept, Mcp-Session-Id, Last-Event-ID, Authorization"
   );
+  res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
   next();
 });
 app.options("*", (_req, res) => res.sendStatus(204));
@@ -521,11 +522,13 @@ app.options("*", (_req, res) => res.sendStatus(204));
 // Session store: sessionId -> transport
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
-// Protocol discovery — HEAD / returns protocol version
-app.head("/", (_req, res) => {
+// Protocol discovery — HEAD returns protocol version
+const handleHead: express.RequestHandler = (_req, res) => {
   res.setHeader("MCP-Protocol-Version", "2025-06-18");
   res.sendStatus(200);
-});
+};
+app.head("/", handleHead);
+app.head("/mcp", handleHead);
 
 // Health check (moved off root so HEAD / can be used for MCP discovery)
 app.get("/health", (_req, res) => {
@@ -552,8 +555,8 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// MCP: POST / — incoming JSON-RPC messages
-app.post("/", async (req, res) => {
+// MCP: POST — incoming JSON-RPC messages
+const handlePost: express.RequestHandler = async (req, res) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
   let transport: StreamableHTTPServerTransport;
@@ -582,20 +585,24 @@ app.post("/", async (req, res) => {
   }
 
   await transport.handleRequest(req, res, req.body);
-});
+};
+app.post("/", handlePost);
+app.post("/mcp", handlePost);
 
-// MCP: GET / — server-to-client SSE stream (for server-initiated messages)
-app.get("/", async (req, res) => {
+// MCP: GET — server-to-client SSE stream (for server-initiated messages)
+const handleGet: express.RequestHandler = async (req, res) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports.has(sessionId)) {
     res.status(400).json({ error: "Invalid or missing Mcp-Session-Id." });
     return;
   }
   await transports.get(sessionId)!.handleRequest(req, res);
-});
+};
+app.get("/", handleGet);
+app.get("/mcp", handleGet);
 
-// MCP: DELETE / — session termination
-app.delete("/", async (req, res) => {
+// MCP: DELETE — session termination
+const handleDelete: express.RequestHandler = async (req, res) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports.has(sessionId)) {
     res.status(400).json({ error: "Invalid or missing Mcp-Session-Id." });
@@ -604,7 +611,9 @@ app.delete("/", async (req, res) => {
   const transport = transports.get(sessionId)!;
   await transport.handleRequest(req, res);
   transports.delete(sessionId);
-});
+};
+app.delete("/", handleDelete);
+app.delete("/mcp", handleDelete);
 
 app.listen(PORT, () => {
   console.log(`Jellyfin MCP server listening on port ${PORT}`);
